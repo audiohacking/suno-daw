@@ -1,10 +1,5 @@
-# AceForge-Suno plugin — Suno API (Music Generation), AU + VST3, macOS
+# AceForge-Suno plugin — Suno API (Music Generation), AU + VST3 (macOS), VST3 (Windows/Linux)
 cmake_minimum_required(VERSION 3.22)
-
-if(NOT APPLE)
-  message(STATUS "AceForge-Suno plugin: skipping (macOS only)")
-  return()
-endif()
 
 include(FetchContent)
 FetchContent_Declare(JUCE
@@ -16,12 +11,29 @@ set(JUCE_ENABLE_GPL_MODE ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(JUCE)
 
 set(SUNO_CLIENT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../SunoClient)
-add_library(SunoClient STATIC
-  ${SUNO_CLIENT_DIR}/SunoClientMac.mm
-)
+
+# Platform-specific SunoClient implementation
+if(APPLE)
+  add_library(SunoClient STATIC ${SUNO_CLIENT_DIR}/SunoClientMac.mm)
+  target_link_libraries(SunoClient PUBLIC "-framework Foundation" "-framework Security")
+elseif(WIN32)
+  add_library(SunoClient STATIC ${SUNO_CLIENT_DIR}/SunoClientWin.cpp)
+  target_link_libraries(SunoClient PUBLIC winhttp)
+elseif(UNIX)
+  add_library(SunoClient STATIC ${SUNO_CLIENT_DIR}/SunoClientLinux.cpp)
+  find_package(CURL REQUIRED)
+  target_link_libraries(SunoClient PUBLIC CURL::libcurl)
+endif()
+
 target_include_directories(SunoClient PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
-target_link_libraries(SunoClient PUBLIC "-framework Foundation" "-framework Security")
 target_compile_features(SunoClient PUBLIC cxx_std_17)
+
+# Platform-specific plugin formats
+if(APPLE)
+  set(PLUGIN_FORMATS AU VST3)
+else()
+  set(PLUGIN_FORMATS VST3)
+endif()
 
 juce_add_plugin(AceForgeSuno
   VERSION 0.1.0
@@ -33,7 +45,7 @@ juce_add_plugin(AceForgeSuno
   EDITOR_WANTS_KEYBOARD_FOCUS FALSE
   PLUGIN_MANUFACTURER_CODE AuHk
   PLUGIN_CODE AfSn
-  FORMATS AU VST3
+  FORMATS ${PLUGIN_FORMATS}
   PRODUCT_NAME "AceForge-Suno"
   COPY_PLUGIN_AFTER_BUILD FALSE
 )

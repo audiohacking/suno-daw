@@ -1,5 +1,5 @@
-# Build and release AceForge-Suno AU + VST3 (macOS)
-name: Build and release (macOS)
+# Build and release AceForge-Suno for macOS, Windows, and Linux
+name: Build and release
 
 on:
   push:
@@ -138,4 +138,126 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AceForgeSuno-macOS-plugins
+          path: release-artefacts/
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: |
+          cmake --build build --config Release
+
+      - name: Locate plugin artefacts
+        id: artefacts
+        shell: bash
+        run: |
+          set -e
+          VST3=$(find build -name "AceForge-Suno.vst3" -type d 2>/dev/null | head -1)
+          [ -n "$VST3" ] || VST3=$(find build -name "*.vst3" -type d 2>/dev/null | head -1)
+          echo "vst3_path=$VST3" >> $GITHUB_OUTPUT
+          echo "Found VST3: $VST3"
+          if [ -z "$VST3" ]; then
+            echo "Plugin artefacts not found. Build tree:"
+            find build -type d -name "*.vst3" 2>/dev/null || true
+            exit 1
+          fi
+
+      - name: Create zip archive for release
+        shell: bash
+        run: |
+          mkdir -p release-artefacts
+          cp -R "${{ steps.artefacts.outputs.vst3_path }}" "release-artefacts/AceForge-Suno.vst3"
+          cd release-artefacts && 7z a -tzip "AceForgeSuno-Windows-VST3.zip" "AceForge-Suno.vst3" && cd ..
+          echo "zip_path=release-artefacts/AceForgeSuno-Windows-VST3.zip" >> $GITHUB_ENV
+
+      - name: Upload release assets
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ (github.event_name == 'release' && github.event.release.tag_name) || inputs.release_tag }}
+          files: |
+            release-artefacts/AceForgeSuno-Windows-VST3.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artefacts (push / workflow_dispatch or no release)
+        if: github.event_name != 'release' || github.event.release == null
+        uses: actions/upload-artifact@v4
+        with:
+          name: AceForgeSuno-Windows-plugins
+          path: release-artefacts/
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            libcurl4-openssl-dev \
+            libasound2-dev \
+            libfreetype6-dev \
+            libx11-dev \
+            libxcomposite-dev \
+            libxcursor-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libgl1-mesa-dev
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: |
+          cmake --build build --config Release
+
+      - name: Locate plugin artefacts
+        id: artefacts
+        run: |
+          set -e
+          VST3=$(find build -name "AceForge-Suno.vst3" -type d 2>/dev/null | head -1)
+          [ -n "$VST3" ] || VST3=$(find build -name "*.vst3" -type d 2>/dev/null | head -1)
+          echo "vst3_path=$VST3" >> $GITHUB_OUTPUT
+          echo "Found VST3: $VST3"
+          if [ -z "$VST3" ]; then
+            echo "Plugin artefacts not found. Build tree:"
+            find build -type d -name "*.vst3" 2>/dev/null || true
+            exit 1
+          fi
+
+      - name: Create tar.gz archive for release
+        run: |
+          mkdir -p release-artefacts
+          cp -R "${{ steps.artefacts.outputs.vst3_path }}" "release-artefacts/AceForge-Suno.vst3"
+          cd release-artefacts && tar -czf "AceForgeSuno-Linux-VST3.tar.gz" "AceForge-Suno.vst3" && cd ..
+          echo "archive_path=release-artefacts/AceForgeSuno-Linux-VST3.tar.gz" >> $GITHUB_ENV
+
+      - name: Upload release assets
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ (github.event_name == 'release' && github.event.release.tag_name) || inputs.release_tag }}
+          files: |
+            release-artefacts/AceForgeSuno-Linux-VST3.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artefacts (push / workflow_dispatch or no release)
+        if: github.event_name != 'release' || github.event.release == null
+        uses: actions/upload-artifact@v4
+        with:
+          name: AceForgeSuno-Linux-plugins
           path: release-artefacts/
