@@ -50,11 +50,12 @@ Models: V4, V4_5, V4_5PLUS, V4_5ALL, V5 (exposed in UI as V4, V4.5, V4.5 Plus, V
 
 - **State:** `Idle` | `Submitting` | `Running` | `Succeeded` | `Failed`. Only one job at a time; UI disables Generate/Cover/Add Vocals while busy.
 - **API key:** Stored in plugin state (`getStateInformation` / `setStateInformation`) so it persists across sessions. On load, `setApiKey` is called and `checkCredits()` runs to set “Suno: connected”.
-- **Recording:** When the user enables Record, `processBlock` appends input samples to `recordBuffer_` under `recordLock_`. The buffer is stereo float. For Cover or Add Vocals we call `encodeRecordedAsWav()` which copies the buffer under lock and encodes to 24-bit WAV (JUCE `WavAudioFormat` + `MemoryOutputStream`).
+- **Recording (transport-driven):** Recording follows the DAW transport. In `processBlock`, `getPlayHead()->getPosition()->getIsPlaying()` is read. When transport goes from stopped to playing, a new segment capture starts (current buffer cleared). When transport goes from playing to stopped, the current buffer is pushed as a **recorded segment** (if at least ~1 s). Segments are stored in `segments_`; each has `buffer`, `sampleRate`, and optional `trimStartSamples` / `trimEndSamples`. The user selects one segment in the UI for Cover or Add Vocals; encoding uses `encodeSegmentAsWav(segmentIndex)` with trim applied.
 - **Generate flow:** UI calls `startGenerate(prompt, style, title, customMode, instrumental, modelIndex)`. A detached thread: `checkCredits()` → `startGenerate(GenerateParams)` → poll `getTaskStatus(taskId)` until status is SUCCESS or failure → `fetchAudio(audioUrls[0])` → put bytes in `pendingWavBytes_` and `triggerAsyncUpdate()`.
-- **Upload-Cover flow:** `startUploadCover(...)` checks `hasRecordedAudio()`, then thread: `encodeRecordedAsWav()` → `uploadAudio(wavBytes, "recorded.wav")` → `startUploadCover(uploadUrl, GenerateParams)` → same poll/fetch/pendingWavBytes_/triggerAsyncUpdate.
-- **Add-Vocals flow:** Same idea: encode recorded → upload → `startAddVocals(AddVocalsParams)` → poll → fetch → pendingWavBytes_ → triggerAsyncUpdate.
-- **Message-thread completion:** `handleAsyncUpdate()` decodes the WAV (JUCE `AudioFormatManager` + `MemoryInputStream`), converts to stereo float, calls `pushSamplesToPlayback()` (resampling if needed), saves a copy to the library directory as `suno_YYYYMMDD_HHMMSS.wav`, sets state to `Succeeded`.
+- **Upload-Cover flow:** `startUploadCover(...)` checks that a segment is selected (`hasSelectedSegment()`), then thread: `encodeSegmentAsWav(jobSegmentIndex_)` → `uploadAudio(wavBytes, "recorded.wav")` → `startUploadCover(uploadUrl, GenerateParams)` → same poll/fetch/pendingWavBytes_/triggerAsyncUpdate.
+- **Add-Vocals flow:** Same idea: selected segment → `encodeSegmentAsWav(jobSegmentIndex_)` → upload → `startAddVocals(AddVocalsParams)` → poll → fetch → pendingWavBytes_ → triggerAsyncUpdate.
+- **API test:** "Test API" runs `startTestApi()`: check credits, then a minimal `startGenerate` (short prompt), poll, fetch audio, set `pendingIsTest_` and `triggerAsyncUpdate()`. `handleAsyncUpdate()` plays the audio and shows "API test passed" without saving to the library.
+- **Message-thread completion:** `handleAsyncUpdate()` decodes the WAV (JUCE `AudioFormatManager` + `MemoryInputStream`), converts to stereo float, calls `pushSamplesToPlayback()` (resampling if needed). If not a test, saves a copy to the library as `suno_YYYYMMDD_HHMMSS.wav`. Sets state to `Succeeded`.
 - **Playback:** Same double-buffer + `AbstractFifo` pattern as the AceForge Bridge: message thread writes into one of two buffers and flips; audio thread in `processBlock` checks `pendingPlaybackReady_`, copies the active buffer into the playback fifo, then reads from the fifo into the output. No playback position UI; playback runs until the buffer is consumed.
 - **Host BPM:** In `processBlock`, `getPlayHead()->getPosition()->getBpm()` is read when available and stored in `hostBpm_`; the editor shows it as “BPM: 120.0” or “BPM: —”.
 
@@ -64,9 +65,9 @@ Models: V4, V4_5, V4_5PLUS, V4_5ALL, V5 (exposed in UI as V4, V4.5, V4.5 Plus, V
 
 - **API key:** Text editor (password-style) + “Save” button → `setApiKey()` and status label shows connection.
 - **Params:** Prompt, Style, Title (text); Model (combo: V4 … V5); Instrumental (toggle).
-- **Actions:** Record (toggle), Generate, Cover (from recorded), Add Vocals (from recorded). Cover/Add Vocals are disabled when there is no recorded audio or when a job is running.
+- **Actions:** Generate, Cover (from recorded), Add Vocals (from recorded). Cover/Add Vocals use the selected segment and are disabled when no segment is selected or when a job is running.
 - **Library:** List of `getLibraryEntries()` (WAVs in `~/Library/Application Support/AceForgeSuno/Generations/`), sorted by modification time. Refresh, drag row to DAW timeline, double-click copies path; “Insert into DAW” opens Logic with the file; “Reveal in Finder” opens the folder.
-- **Timer:** ~4 Hz to update status label, BPM label, and button states from the processor.
+- **Timer:** ~4 Hz to update status label, BPM label, segments list, selection sync, trim sliders, and button states from the processor.
 
 ---
 

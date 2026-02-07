@@ -64,55 +64,121 @@ void AceForgeSunoAudioProcessor::setApiKey(const juce::String& key)
         connected_.store(true);
 }
 
-void AceForgeSunoAudioProcessor::clearRecordedBuffer()
+void AceForgeSunoAudioProcessor::clearAllSegments()
 {
-    juce::ScopedLock l(recordLock_);
-    recordBuffer_.clear();
+    juce::ScopedLock l(segmentLock_);
+    segments_.clear();
+    currentSegmentBuffer_.clear();
+    selectedSegmentIndex_.store(-1);
+}
+
+int AceForgeSunoAudioProcessor::getNumSegments() const
+{
+    juce::ScopedLock l(segmentLock_);
+    return static_cast<int>(segments_.size());
+}
+
+AceForgeSunoAudioProcessor::RecordedSegment AceForgeSunoAudioProcessor::getSegment(int index) const
+{
+    juce::ScopedLock l(segmentLock_);
+    if (index < 0 || index >= static_cast<int>(segments_.size()))
+        return {};
+    return segments_[static_cast<size_t>(index)];
+}
+
+double AceForgeSunoAudioProcessor::getSegmentDurationSeconds(int index) const
+{
+    auto seg = getSegment(index);
+    const int numCh = 2;
+    const int totalFrames = static_cast<int>(seg.buffer.size()) / numCh;
+    if (totalFrames <= 0 || seg.sampleRate <= 0.0)
+        return 0.0;
+    int end = seg.trimEndSamples > 0 ? seg.trimEndSamples : totalFrames;
+    int start = seg.trimStartSamples;
+    int frames = std::max(0, end - start);
+    return static_cast<double>(frames) / seg.sampleRate;
+}
+
+void AceForgeSunoAudioProcessor::setSegmentTrim(int index, int startSamples, int endSamples)
+{
+    juce::ScopedLock l(segmentLock_);
+    if (index < 0 || index >= static_cast<int>(segments_.size()))
+        return;
+    auto& seg = segments_[static_cast<size_t>(index)];
+    const int totalFrames = static_cast<int>(seg.buffer.size()) / 2;
+    seg.trimStartSamples = juce::jlimit(0, totalFrames, startSamples);
+    seg.trimEndSamples = (endSamples <= 0) ? 0 : juce::jlimit(0, totalFrames, endSamples);
+}
+
+void AceForgeSunoAudioProcessor::removeSegment(int index)
+{
+    juce::ScopedLock l(segmentLock_);
+    if (index < 0 || index >= static_cast<int>(segments_.size()))
+        return;
+    segments_.erase(segments_.begin() + index);
+    int sel = selectedSegmentIndex_.load();
+    if (sel == index)
+        selectedSegmentIndex_.store(-1);
+    else if (sel > index)
+        selectedSegmentIndex_.store(sel - 1);
 }
 
 bool AceForgeSunoAudioProcessor::hasRecordedAudio() const
 {
-    juce::ScopedLock l(recordLock_);
-    return recordBuffer_.size() >= 2 * 44100; // at least ~1 sec stereo at 44.1k
+    return hasSelectedSegment();
 }
 
-int AceForgeSunoAudioProcessor::getRecordedSamples() const
+bool AceForgeSunoAudioProcessor::hasSelectedSegment() const
 {
-    juce::ScopedLock l(recordLock_);
-    const int ch = 2;
-    const size_t n = recordBuffer_.size();
-    return static_cast<int>((n / ch) * ch); // frames * channels
+    int idx = selectedSegmentIndex_.load();
+    if (idx < 0)
+        return false;
+    juce::ScopedLock l(segmentLock_);
+    if (idx >= static_cast<int>(segments_.size()))
+        return false;
+    const auto& seg = segments_[static_cast<size_t>(idx)];
+    const int totalFrames = static_cast<int>(seg.buffer.size()) / 2;
+    if (totalFrames < 44100) // at least ~1 sec
+        return false;
+    int end = seg.trimEndSamples > 0 ? seg.trimEndSamples : totalFrames;
+    return (end - seg.trimStartSamples) >= 44100;
 }
 
-std::vector<uint8_t> AceForgeSunoAudioProcessor::encodeRecordedAsWav() const
+std::vector<uint8_t> AceForgeSunoAudioProcessor::encodeSegmentAsWav(int segmentIndex) const
 {
-    std::vector<float> copy;
-    double rate = 44100.0;
+    RecordedSegment seg;
     {
-        juce::ScopedLock l(recordLock_);
-        if (recordBuffer_.empty())
+        juce::ScopedLock l(segmentLock_);
+        if (segmentIndex < 0 || segmentIndex >= static_cast<int>(segments_.size()))
             return {};
-        copy = recordBuffer_;
-        rate = sampleRate_.load();
+        seg = segments_[static_cast<size_t>(segmentIndex)];
     }
     const int numCh = 2;
-    const int numFrames = static_cast<int>(copy.size()) / numCh;
+    const int totalFrames = static_cast<int>(seg.buffer.size()) / numCh;
+    if (totalFrames <= 0)
+        return {};
+    int start = seg.trimStartSamples;
+    int end = seg.trimEndSamples > 0 ? seg.trimEndSamples : totalFrames;
+    int numFrames = std::max(0, end - start);
     if (numFrames <= 0)
         return {};
 
-    juce::MemoryBlock block;
-    juce::WavAudioFormat wavFormat;
     juce::AudioBuffer<float> buf(numCh, numFrames);
     for (int c = 0; c < numCh; ++c)
         for (int i = 0; i < numFrames; ++i)
-            buf.setSample(c, i, copy[static_cast<size_t>(i) * 2u + static_cast<size_t>(c)]);
+            buf.setSample(c, i, seg.buffer[static_cast<size_t>(start + i) * 2u + static_cast<size_t>(c)]);
 
-    std::unique_ptr<juce::MemoryOutputStream> mos(new juce::MemoryOutputStream(block, true));
-    if (auto* writer = wavFormat.createWriterFor(mos.get(), rate, static_cast<unsigned int>(numCh), 24, {}, 0))
+    juce::MemoryBlock block;
+    juce::WavAudioFormat wavFormat;
+    auto options = juce::AudioFormatWriterOptions{}
+                      .withSampleRate(seg.sampleRate)
+                      .withNumChannels(numCh)
+                      .withBitsPerSample(24);
+    std::unique_ptr<juce::OutputStream> mos = std::make_unique<juce::MemoryOutputStream>(block, true);
+    if (auto writer = wavFormat.createWriterFor(mos, options))
     {
         writer->writeFromAudioSampleBuffer(buf, 0, numFrames);
         writer->flush();
-        mos->flush();
         size_t sz = block.getSize();
         if (sz > 0 && block.getData() != nullptr)
             return std::vector<uint8_t>(static_cast<const uint8_t*>(block.getData()),
@@ -146,11 +212,12 @@ void AceForgeSunoAudioProcessor::startGenerate(const juce::String& prompt, const
 void AceForgeSunoAudioProcessor::startUploadCover(const juce::String& prompt, const juce::String& style, const juce::String& title,
                                                   bool customMode, bool instrumental, int modelIndex)
 {
-    if (!hasRecordedAudio())
+    int segIdx = selectedSegmentIndex_.load();
+    if (!hasSelectedSegment() || segIdx < 0)
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "No recorded audio. Record first, then Cover.";
+        lastError_ = "Select a recorded segment first (DAW Play then Stop to capture).";
         statusText_ = lastError_;
         triggerAsyncUpdate();
         return;
@@ -169,6 +236,7 @@ void AceForgeSunoAudioProcessor::startUploadCover(const juce::String& prompt, co
     jobModelIndex_ = modelIndex;
     jobIsCover_ = true;
     jobIsAddVocals_ = false;
+    jobSegmentIndex_ = segIdx;
     triggerAsyncUpdate();
     std::thread t(&AceForgeSunoAudioProcessor::runUploadCoverThread, this);
     t.detach();
@@ -176,11 +244,12 @@ void AceForgeSunoAudioProcessor::startUploadCover(const juce::String& prompt, co
 
 void AceForgeSunoAudioProcessor::startAddVocals(const juce::String& prompt, const juce::String& style, const juce::String& title)
 {
-    if (!hasRecordedAudio())
+    int segIdx = selectedSegmentIndex_.load();
+    if (!hasSelectedSegment() || segIdx < 0)
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "No recorded audio. Record instrumental first, then Add Vocals.";
+        lastError_ = "Select a recorded segment first (DAW Play then Stop to capture instrumental).";
         statusText_ = lastError_;
         triggerAsyncUpdate();
         return;
@@ -196,6 +265,7 @@ void AceForgeSunoAudioProcessor::startAddVocals(const juce::String& prompt, cons
     jobTitle_ = title.isEmpty() ? "aceforge_suno_vocals" : title;
     jobIsCover_ = false;
     jobIsAddVocals_ = true;
+    jobSegmentIndex_ = segIdx;
     triggerAsyncUpdate();
     std::thread t(&AceForgeSunoAudioProcessor::runAddVocalsThread, this);
     t.detach();
@@ -318,12 +388,12 @@ void AceForgeSunoAudioProcessor::runUploadCoverThread()
     }
     connected_.store(true);
 
-    std::vector<uint8_t> wavBytes = encodeRecordedAsWav();
+    std::vector<uint8_t> wavBytes = encodeSegmentAsWav(jobSegmentIndex_);
     if (wavBytes.empty())
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "Failed to encode recorded audio as WAV";
+        lastError_ = "Failed to encode selected segment as WAV";
         statusText_ = lastError_;
         triggerAsyncUpdate();
         return;
@@ -434,12 +504,12 @@ void AceForgeSunoAudioProcessor::runAddVocalsThread()
     }
     connected_.store(true);
 
-    std::vector<uint8_t> wavBytes = encodeRecordedAsWav();
+    std::vector<uint8_t> wavBytes = encodeSegmentAsWav(jobSegmentIndex_);
     if (wavBytes.empty())
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "Failed to encode recorded audio";
+        lastError_ = "Failed to encode selected segment as WAV";
         statusText_ = lastError_;
         triggerAsyncUpdate();
         return;
@@ -526,6 +596,110 @@ void AceForgeSunoAudioProcessor::runAddVocalsThread()
     }
 }
 
+void AceForgeSunoAudioProcessor::startTestApi()
+{
+    State expected = state_.load();
+    while (expected == State::Submitting || expected == State::Running)
+        return;
+    if (!state_.compare_exchange_strong(expected, State::Submitting))
+        return;
+    triggerAsyncUpdate();
+    std::thread t(&AceForgeSunoAudioProcessor::runTestApiThread, this);
+    t.detach();
+}
+
+void AceForgeSunoAudioProcessor::runTestApiThread()
+{
+    if (!client_ || !client_->hasApiKey())
+    {
+        state_.store(State::Failed);
+        juce::ScopedLock l(statusLock_);
+        lastError_ = "No API key";
+        statusText_ = lastError_;
+        triggerAsyncUpdate();
+        return;
+    }
+    if (!client_->checkCredits())
+    {
+        connected_.store(false);
+        state_.store(State::Failed);
+        juce::ScopedLock l(statusLock_);
+        lastError_ = "API key invalid or no credits: " + juce::String(client_->lastError());
+        statusText_ = lastError_;
+        triggerAsyncUpdate();
+        return;
+    }
+    connected_.store(true);
+
+    state_.store(State::Running);
+    { juce::ScopedLock l(statusLock_); statusText_ = "Testing API (minimal generate)…"; }
+    triggerAsyncUpdate();
+
+    suno::GenerateParams p;
+    p.prompt = "test";
+    p.style = "instrumental";
+    p.title = "api_test";
+    p.customMode = false;
+    p.instrumental = true;
+    p.model = suno::Model::V4_5ALL;
+
+    std::string taskId = client_->startGenerate(p);
+    if (taskId.empty())
+    {
+        state_.store(State::Failed);
+        juce::ScopedLock l(statusLock_);
+        lastError_ = juce::String(client_->lastError());
+        statusText_ = lastError_;
+        triggerAsyncUpdate();
+        return;
+    }
+
+    while (true)
+    {
+        suno::TaskStatus st = client_->getTaskStatus(taskId);
+        juce::String statusStr(st.status.c_str());
+        if (statusStr.equalsIgnoreCase("SUCCESS") || statusStr.equalsIgnoreCase("success"))
+        {
+            if (st.audioUrls.empty())
+            {
+                state_.store(State::Failed);
+                juce::ScopedLock l(statusLock_);
+                lastError_ = "No audio URL in test result";
+                statusText_ = lastError_;
+                triggerAsyncUpdate();
+                return;
+            }
+            std::vector<uint8_t> wavBytes = client_->fetchAudio(st.audioUrls[0]);
+            if (wavBytes.empty())
+            {
+                state_.store(State::Failed);
+                juce::ScopedLock l(statusLock_);
+                lastError_ = juce::String(client_->lastError());
+                triggerAsyncUpdate();
+                return;
+            }
+            {
+                juce::ScopedLock l(pendingWavLock_);
+                pendingWavBytes_ = std::move(wavBytes);
+                pendingPrompt_ = "API test";
+                pendingIsTest_.store(true);
+            }
+            triggerAsyncUpdate();
+            return;
+        }
+        if (statusStr.isNotEmpty() && (statusStr.contains("fail") || statusStr.contains("error")))
+        {
+            state_.store(State::Failed);
+            juce::ScopedLock l(statusLock_);
+            lastError_ = juce::String(st.errorMessage.empty() ? st.status.c_str() : st.errorMessage.c_str());
+            statusText_ = lastError_;
+            triggerAsyncUpdate();
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    }
+}
+
 void AceForgeSunoAudioProcessor::pushSamplesToPlayback(const float* interleaved, int numFrames,
                                                        int sourceChannels, double sourceSampleRate)
 {
@@ -571,24 +745,53 @@ void AceForgeSunoAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     const int numSamples = buffer.getNumSamples();
     const int numCh = buffer.getNumChannels();
 
-    // Host BPM from playhead when available
+    // Host BPM and transport from playhead when available
+    bool isPlaying = false;
     if (auto* playhead = getPlayHead())
     {
         juce::Optional<juce::AudioPlayHead::PositionInfo> pos = playhead->getPosition();
-        if (pos && pos->getBpm().hasValue())
-            hostBpm_.store(*pos->getBpm());
+        if (pos)
+        {
+            if (pos->getBpm().hasValue())
+                hostBpm_.store(*pos->getBpm());
+            isPlaying = pos->getIsPlaying();
+        }
     }
 
-    // Recording: append input under lock
-    if (recording_.load() && numCh >= 2)
+    // Transport-driven recording: play = start segment, stop = save segment
     {
-        juce::ScopedLock l(recordLock_);
-        const size_t start = recordBuffer_.size();
-        recordBuffer_.resize(start + static_cast<size_t>(numSamples) * 2u);
-        for (int i = 0; i < numSamples; ++i)
+        juce::ScopedLock l(segmentLock_);
+        if (isPlaying && !wasPlaying_)
         {
-            recordBuffer_[start + static_cast<size_t>(i) * 2u] = buffer.getSample(0, i);
-            recordBuffer_[start + static_cast<size_t>(i) * 2u + 1u] = buffer.getSample(1, i);
+            currentSegmentBuffer_.clear();
+            transportRecording_.store(true);
+        }
+        else if (!isPlaying && wasPlaying_)
+        {
+            const int minSamples = 2 * 44100; // ~1 sec stereo at 44.1k
+            if (static_cast<int>(currentSegmentBuffer_.size()) >= minSamples)
+            {
+                RecordedSegment seg;
+                seg.buffer = currentSegmentBuffer_;
+                seg.sampleRate = sampleRate_.load();
+                seg.trimEndSamples = 0; // full length
+                segments_.push_back(std::move(seg));
+                selectedSegmentIndex_.store(static_cast<int>(segments_.size()) - 1);
+            }
+            currentSegmentBuffer_.clear();
+            transportRecording_.store(false);
+        }
+        wasPlaying_ = isPlaying;
+
+        if (isPlaying && numCh >= 2)
+        {
+            const size_t start = currentSegmentBuffer_.size();
+            currentSegmentBuffer_.resize(start + static_cast<size_t>(numSamples) * 2u);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                currentSegmentBuffer_[start + static_cast<size_t>(i) * 2u] = buffer.getSample(0, i);
+                currentSegmentBuffer_[start + static_cast<size_t>(i) * 2u + 1u] = buffer.getSample(1, i);
+            }
         }
     }
 
@@ -649,6 +852,7 @@ void AceForgeSunoAudioProcessor::handleAsyncUpdate()
 {
     std::vector<uint8_t> wavBytes;
     juce::String promptForLibrary;
+    bool isTest = false;
     {
         juce::ScopedLock l(pendingWavLock_);
         if (pendingWavBytes_.empty())
@@ -656,6 +860,7 @@ void AceForgeSunoAudioProcessor::handleAsyncUpdate()
         wavBytes = std::move(pendingWavBytes_);
         pendingWavBytes_.clear();
         promptForLibrary = pendingPrompt_;
+        isTest = pendingIsTest_.exchange(false);
     }
 
     juce::AudioFormatManager fm;
@@ -700,8 +905,11 @@ void AceForgeSunoAudioProcessor::handleAsyncUpdate()
     state_.store(State::Succeeded);
     {
         juce::ScopedLock l(statusLock_);
-        statusText_ = "Generated - playing.";
+        statusText_ = isTest ? "API test passed - audio received and playing." : "Generated - playing.";
     }
+
+    if (isTest)
+        return; // don't save test audio to library
 
     juce::File libDir = getLibraryDirectory();
     juce::String baseName = "suno_" + juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S");

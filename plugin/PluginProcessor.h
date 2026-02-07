@@ -55,12 +55,27 @@ public:
     juce::String getApiKey() const { return apiKey_; }
     bool hasValidApiKey() const { return client_ && client_->hasApiKey(); }
 
-    // Recording: when true, processBlock appends input to recordBuffer_
-    void setRecording(bool on) { recording_.store(on); }
-    bool isRecording() const { return recording_.load(); }
-    void clearRecordedBuffer();
-    bool hasRecordedAudio() const;
-    int getRecordedSamples() const;
+    // Recording follows DAW transport: play = start segment, stop = save segment
+    bool isTransportRecording() const { return transportRecording_.load(); }
+    void clearAllSegments();
+
+    // Recorded segments (from DAW play/stop); user can review, trim, then use for Cover/Add Vocals
+    struct RecordedSegment
+    {
+        std::vector<float> buffer;  // stereo interleaved
+        double sampleRate = 44100.0;
+        int trimStartSamples = 0;   // inclusive
+        int trimEndSamples = 0;     // exclusive (0 = use full length)
+    };
+    int getNumSegments() const;
+    RecordedSegment getSegment(int index) const;
+    double getSegmentDurationSeconds(int index) const;
+    void setSegmentTrim(int index, int startSamples, int endSamples);
+    void removeSegment(int index);
+    int getSelectedSegmentIndex() const { return selectedSegmentIndex_.load(); }
+    void setSelectedSegmentIndex(int index) { selectedSegmentIndex_.store(index); }
+    bool hasRecordedAudio() const;  // true if at least one segment with usable length
+    bool hasSelectedSegment() const;
 
     // Generation modes
     void startGenerate(const juce::String& prompt, const juce::String& style, const juce::String& title,
@@ -74,8 +89,11 @@ public:
     juce::String getLastError() const;
     bool isConnected() const { return connected_.load(); }
 
-    // Host tempo when available
+    // Host tempo when available (from DAW)
     double getHostBpm() const { return hostBpm_.load(); }
+
+    // Built-in API test: check credits and optionally run a minimal generate to verify audio return
+    void startTestApi();
 
     // Library (saved generations on disk)
     struct LibraryEntry { juce::File file; juce::String prompt; juce::Time time; };
@@ -86,22 +104,28 @@ private:
     void runGenerateThread();
     void runUploadCoverThread();
     void runAddVocalsThread();
+    void runTestApiThread();
     void pushSamplesToPlayback(const float* interleaved, int numFrames, int sourceChannels, double sourceSampleRate);
-    std::vector<uint8_t> encodeRecordedAsWav() const;
+    std::vector<uint8_t> encodeSegmentAsWav(int segmentIndex) const;
 
     std::unique_ptr<suno::SunoClient> client_;
     juce::String apiKey_;
     std::atomic<State> state_{ State::Idle };
     std::atomic<bool> connected_{ false };
-    std::atomic<bool> recording_{ false };
+    std::atomic<bool> transportRecording_{ false };
     juce::CriticalSection statusLock_;
     juce::String lastError_;
     juce::String statusText_;
     std::atomic<double> hostBpm_{ 0.0 };
 
-    // Recorded audio (audio thread appends under lock; worker copies out for WAV)
-    std::vector<float> recordBuffer_;
-    juce::CriticalSection recordLock_;
+    // Transport-driven recording: current in-progress segment while DAW is playing
+    std::vector<float> currentSegmentBuffer_;
+    bool wasPlaying_ = false;
+    juce::CriticalSection segmentLock_;
+
+    // Saved segments (one per DAW play/stop); user selects one for Cover/Add Vocals
+    std::vector<RecordedSegment> segments_;
+    std::atomic<int> selectedSegmentIndex_{ -1 };
 
     // Playback (same double-buffer pattern as AceForge plugin)
     static constexpr int kPlaybackFifoFrames = 1 << 20;
@@ -117,6 +141,7 @@ private:
     juce::CriticalSection pendingWavLock_;
     std::vector<uint8_t> pendingWavBytes_;
     juce::String pendingPrompt_;
+    std::atomic<bool> pendingIsTest_{ false };
 
     // Params for current job (set before starting thread)
     juce::String jobPrompt_;
@@ -127,6 +152,7 @@ private:
     int jobModelIndex_{ 3 };  // V4_5ALL
     bool jobIsCover_{ false };
     bool jobIsAddVocals_{ false };
+    int jobSegmentIndex_{ -1 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AceForgeSunoAudioProcessor)
 };

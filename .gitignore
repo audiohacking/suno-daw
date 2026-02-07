@@ -1,4 +1,6 @@
 build/
+release-artefacts/
+payload/
 *.user
 .DS_Store
 *.xcuserstate

@@ -31,6 +31,20 @@ Then copy the built plugins to your system:
 
 Rescan plugins in your DAW.
 
+### Build installer (.pkg and zip)
+
+After building, run the installer script from the repo root to produce a zip and a macOS `.pkg`:
+
+```bash
+./scripts/build-installer-pkg.sh [--sign-plugins] [--version 0.1.0]
+```
+
+- **Output:** `release-artefacts/AceForgeSuno-macOS-AU-VST3.zip` and `release-artefacts/AceForgeSuno-macOS-Installer.pkg`
+- Use `--sign-plugins` to ad-hoc sign the plugin bundles (recommended for local testing).
+- Install: open the `.pkg` in Finder, or `sudo installer -pkg release-artefacts/AceForgeSuno-macOS-Installer.pkg -target /`
+
+If Xcode is not available, use Unix Makefiles: `-G "Unix Makefiles"` and set `CMAKE_C_COMPILER` / `CMAKE_CXX_COMPILER` to your clang path.
+
 ## Install (pre-built)
 
 - **Releases:** See [Releases](https://github.com/audiohacking/suno-daw/releases). Download the zip or the `.pkg` installer.

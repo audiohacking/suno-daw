@@ -77,13 +77,47 @@ void LibraryListBoxSuno::mouseUp(const juce::MouseEvent& e)
     ListBox::mouseUp(e);
 }
 
+// --- SegmentsListModelSuno ---
+int SegmentsListModelSuno::getNumRows()
+{
+    return processor.getNumSegments();
+}
+
+void SegmentsListModelSuno::paintListBoxItem(int rowNumber, juce::Graphics& g, int width, int height, bool rowIsSelected)
+{
+    if (rowNumber < 0 || rowNumber >= processor.getNumSegments())
+        return;
+    if (rowIsSelected)
+        g.fillAll(juce::Colour(0xff2a2a4e));
+    double sec = processor.getSegmentDurationSeconds(rowNumber);
+    juce::String text = "Segment " + juce::String(rowNumber + 1) + "  —  "
+                        + juce::String(static_cast<int>(sec) / 60) + ":"
+                        + juce::String(static_cast<int>(sec) % 60).paddedLeft('0', 2)
+                        + "." + juce::String(static_cast<int>(sec * 10) % 10);
+    g.setColour(juce::Colours::white);
+    g.setFont(14.0f);
+    g.drawText(text, 6, 0, width - 12, height, juce::Justification::centredLeft);
+}
+
+void SegmentsListModelSuno::listBoxItemClicked(int row, const juce::MouseEvent&)
+{
+    if (onRowSelected_)
+        onRowSelected_(row);
+}
+
 // --- Editor ---
 AceForgeSunoAudioProcessorEditor::AceForgeSunoAudioProcessorEditor(AceForgeSunoAudioProcessor& p)
-    : AudioProcessorEditor(&p), processorRef(p), libraryListModel(p), libraryList(p, libraryListModel)
+    : AudioProcessorEditor(&p), processorRef(p), segmentsListModel(p), segmentsList("Segments", &segmentsListModel),
+      libraryListModel(p), libraryList(p, libraryListModel)
 {
-    setSize(520, 620);
+    setSize(540, 760);
 
-    apiKeyLabel.setText("Suno API Key:", juce::dontSendNotification);
+    sunoSettingsLabel.setText("Suno settings", juce::dontSendNotification);
+    sunoSettingsLabel.setColour(juce::Label::textColourId, juce::Colours::white);
+    sunoSettingsLabel.setFont(juce::Font(juce::FontOptions().withPointHeight(14.0f).withStyle("Bold")));
+    addAndMakeVisible(sunoSettingsLabel);
+
+    apiKeyLabel.setText("API Key:", juce::dontSendNotification);
     apiKeyLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(apiKeyLabel);
 
@@ -96,6 +130,10 @@ AceForgeSunoAudioProcessorEditor::AceForgeSunoAudioProcessorEditor(AceForgeSunoA
     saveApiKeyButton.onClick = [this] { saveApiKey(); };
     addAndMakeVisible(saveApiKeyButton);
 
+    testApiButton.setButtonText("Test API");
+    testApiButton.onClick = [this] { processorRef.startTestApi(); };
+    addAndMakeVisible(testApiButton);
+
     connectionLabel.setText("Set API key and save.", juce::dontSendNotification);
     connectionLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
     addAndMakeVisible(connectionLabel);
@@ -104,9 +142,49 @@ AceForgeSunoAudioProcessorEditor::AceForgeSunoAudioProcessorEditor(AceForgeSunoA
     bpmLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(bpmLabel);
 
-    recordButton.setButtonText("Record");
-    recordButton.onClick = [this] { processorRef.setRecording(recordButton.getToggleState()); };
-    addAndMakeVisible(recordButton);
+    recordHintLabel.setText("Record follows DAW: press Play to start capture, Stop to save segment. Select a segment below for Cover / Add Vocals.", juce::dontSendNotification);
+    recordHintLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
+    recordHintLabel.setFont(juce::Font(juce::FontOptions().withPointHeight(10.0f)));
+    recordHintLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(recordHintLabel);
+
+    segmentsLabel.setText("Recorded segments", juce::dontSendNotification);
+    segmentsLabel.setColour(juce::Label::textColourId, juce::Colours::white);
+    addAndMakeVisible(segmentsLabel);
+
+    segmentsList.setRowHeight(24);
+    segmentsList.setOutlineThickness(0);
+    segmentsListModel.setOnRowSelected([this](int row)
+    {
+        processorRef.setSelectedSegmentIndex(row >= 0 ? row : -1);
+        updateTrimSlidersFromSelection();
+    });
+    addAndMakeVisible(segmentsList);
+
+    trimLabel.setText("Trim selected (sec):", juce::dontSendNotification);
+    trimLabel.setColour(juce::Label::textColourId, juce::Colours::white);
+    addAndMakeVisible(trimLabel);
+
+    trimStartSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+    trimStartSlider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 44, 18);
+    trimStartSlider.setRange(0.0, 600.0, 0.1);
+    trimStartSlider.onValueChange = [this] { applyTrimToSelectedSegment(); };
+    addAndMakeVisible(trimStartSlider);
+
+    trimEndSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+    trimEndSlider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 44, 18);
+    trimEndSlider.setRange(0.0, 600.0, 0.1);
+    trimEndSlider.onValueChange = [this] { applyTrimToSelectedSegment(); };
+    addAndMakeVisible(trimEndSlider);
+
+    clearSegmentsButton.setButtonText("Clear all segments");
+    clearSegmentsButton.onClick = [this]
+    {
+        processorRef.clearAllSegments();
+        refreshSegmentsList();
+        updateTrimSlidersFromSelection();
+    };
+    addAndMakeVisible(clearSegmentsButton);
 
     promptLabel.setText("Prompt:", juce::dontSendNotification);
     promptLabel.setColour(juce::Label::textColourId, juce::Colours::white);
@@ -233,7 +311,59 @@ void AceForgeSunoAudioProcessorEditor::timerCallback()
         bpmLabel.setText("BPM: " + juce::String(bpm, 1), juce::dontSendNotification);
     else
         bpmLabel.setText("BPM: —", juce::dontSendNotification);
+    refreshSegmentsList();
+    if (processorRef.getSelectedSegmentIndex() != segmentsList.getSelectedRow())
+        segmentsList.selectRow(processorRef.getSelectedSegmentIndex());
+    updateTrimSlidersFromSelection();
     libraryList.updateContent();
+}
+
+void AceForgeSunoAudioProcessorEditor::refreshSegmentsList()
+{
+    segmentsList.updateContent();
+    segmentsList.repaint();
+}
+
+void AceForgeSunoAudioProcessorEditor::updateTrimSlidersFromSelection()
+{
+    int idx = processorRef.getSelectedSegmentIndex();
+    if (idx < 0 || idx >= processorRef.getNumSegments())
+    {
+        trimStartSlider.setEnabled(false);
+        trimEndSlider.setEnabled(false);
+        trimStartSlider.setValue(0.0, juce::dontSendNotification);
+        trimEndSlider.setValue(0.0, juce::dontSendNotification);
+        return;
+    }
+    auto seg = processorRef.getSegment(idx);
+    const int totalFrames = static_cast<int>(seg.buffer.size()) / 2;
+    const double totalSec = totalFrames / (seg.sampleRate > 0.0 ? seg.sampleRate : 44100.0);
+    const int end = seg.trimEndSamples > 0 ? seg.trimEndSamples : totalFrames;
+    const double startSec = seg.trimStartSamples / (seg.sampleRate > 0.0 ? seg.sampleRate : 44100.0);
+    const double endSec = end / (seg.sampleRate > 0.0 ? seg.sampleRate : 44100.0);
+
+    trimStartSlider.setRange(0.0, totalSec, 0.1);
+    trimEndSlider.setRange(0.0, totalSec, 0.1);
+    trimStartSlider.setValue(startSec, juce::dontSendNotification);
+    trimEndSlider.setValue(endSec, juce::dontSendNotification);
+    trimStartSlider.setEnabled(true);
+    trimEndSlider.setEnabled(true);
+}
+
+void AceForgeSunoAudioProcessorEditor::applyTrimToSelectedSegment()
+{
+    int idx = processorRef.getSelectedSegmentIndex();
+    if (idx < 0 || idx >= processorRef.getNumSegments())
+        return;
+    auto seg = processorRef.getSegment(idx);
+    const double rate = seg.sampleRate > 0.0 ? seg.sampleRate : 44100.0;
+    const int totalFrames = static_cast<int>(seg.buffer.size()) / 2;
+    int startSamples = juce::jlimit(0, totalFrames, static_cast<int>(trimStartSlider.getValue() * rate + 0.5));
+    int endSamples = juce::jlimit(0, totalFrames, static_cast<int>(trimEndSlider.getValue() * rate + 0.5));
+    if (endSamples <= startSamples)
+        endSamples = startSamples + 1;
+    processorRef.setSegmentTrim(idx, startSamples, endSamples);
+    refreshSegmentsList();
 }
 
 void AceForgeSunoAudioProcessorEditor::updateStatusFromProcessor()
@@ -257,9 +387,9 @@ void AceForgeSunoAudioProcessorEditor::updateStatusFromProcessor()
     const bool busy = (state == AceForgeSunoAudioProcessor::State::Submitting ||
                       state == AceForgeSunoAudioProcessor::State::Running);
     generateButton.setEnabled(!busy);
-    coverButton.setEnabled(!busy && processorRef.hasRecordedAudio());
-    addVocalsButton.setEnabled(!busy && processorRef.hasRecordedAudio());
-    recordButton.setEnabled(!busy);
+    coverButton.setEnabled(!busy && processorRef.hasSelectedSegment());
+    addVocalsButton.setEnabled(!busy && processorRef.hasSelectedSegment());
+    testApiButton.setEnabled(!busy && processorRef.hasValidApiKey());
 }
 
 void AceForgeSunoAudioProcessorEditor::refreshLibraryList()
@@ -345,17 +475,35 @@ void AceForgeSunoAudioProcessorEditor::resized()
     auto r = getLocalBounds().reduced(pad);
     r.removeFromTop(26);
 
-    auto row = r.removeFromTop(22);
-    apiKeyLabel.setBounds(row.getX(), row.getY(), 80, 20);
-    apiKeyEditor.setBounds(row.getX() + 84, row.getY(), r.getWidth() - 84 - 56, 20);
-    saveApiKeyButton.setBounds(row.getX() + r.getWidth() - 54, row.getY(), 50, 20);
-    r.removeFromTop(4);
-    connectionLabel.setBounds(r.getX(), r.getY(), 200, 20);
-    bpmLabel.setBounds(r.getX() + 220, r.getY(), 80, 20);
+    sunoSettingsLabel.setBounds(r.getX(), r.getY(), 200, 20);
     r.removeFromTop(22);
-    r.removeFromTop(6);
 
-    recordButton.setBounds(r.getX(), r.getY(), 80, 22);
+    auto row = r.removeFromTop(22);
+    apiKeyLabel.setBounds(row.getX(), row.getY(), 50, 20);
+    apiKeyEditor.setBounds(row.getX() + 54, row.getY(), r.getWidth() - 54 - 120, 20);
+    saveApiKeyButton.setBounds(row.getX() + r.getWidth() - 116, row.getY(), 50, 20);
+    testApiButton.setBounds(row.getX() + r.getWidth() - 62, row.getY(), 58, 20);
+    r.removeFromTop(4);
+    connectionLabel.setBounds(r.getX(), r.getY(), 220, 20);
+    bpmLabel.setBounds(r.getX() + 230, r.getY(), 80, 20);
+    r.removeFromTop(22);
+    r.removeFromTop(4);
+
+    recordHintLabel.setBounds(r.getX(), r.getY(), r.getWidth(), 32);
+    r.removeFromTop(32);
+
+    auto segHeader = r.removeFromTop(22);
+    segmentsLabel.setBounds(segHeader.getX(), segHeader.getY(), 140, 22);
+    clearSegmentsButton.setBounds(segHeader.getX() + 144, segHeader.getY(), 120, 22);
+    r.removeFromTop(4);
+    segmentsList.setBounds(r.getX(), r.getY(), r.getWidth(), 100);
+    r.removeFromTop(100);
+    r.removeFromTop(4);
+    trimLabel.setBounds(r.getX(), r.getY(), 120, 20);
+    r.removeFromTop(22);
+    trimStartSlider.setBounds(r.getX(), r.getY(), r.getWidth(), 22);
+    r.removeFromTop(24);
+    trimEndSlider.setBounds(r.getX(), r.getY(), r.getWidth(), 22);
     r.removeFromTop(26);
     r.removeFromTop(4);
 

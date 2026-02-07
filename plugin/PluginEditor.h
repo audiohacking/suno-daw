@@ -33,6 +33,22 @@ private:
     bool dragStarted_{ false };
 };
 
+// Segments (DAW play/stop captures) list
+class SegmentsListModelSuno : public juce::ListBoxModel
+{
+public:
+    explicit SegmentsListModelSuno(AceForgeSunoAudioProcessor& p) : processor(p) {}
+    int getNumRows() override;
+    void paintListBoxItem(int rowNumber, juce::Graphics& g, int width, int height, bool rowIsSelected) override;
+    void listBoxItemClicked(int row, const juce::MouseEvent&) override;
+
+    void setOnRowSelected(std::function<void(int)> f) { onRowSelected_ = std::move(f); }
+
+private:
+    AceForgeSunoAudioProcessor& processor;
+    std::function<void(int)> onRowSelected_;
+};
+
 class AceForgeSunoAudioProcessorEditor : public juce::AudioProcessorEditor,
                                          public juce::DragAndDropContainer,
                                          public juce::Timer
@@ -49,13 +65,22 @@ public:
 private:
     AceForgeSunoAudioProcessor& processorRef;
 
+    juce::Label sunoSettingsLabel;
     juce::Label apiKeyLabel;
     juce::TextEditor apiKeyEditor;
     juce::TextButton saveApiKeyButton;
+    juce::TextButton testApiButton;
     juce::Label connectionLabel;
     juce::Label bpmLabel;
 
-    juce::ToggleButton recordButton;
+    juce::Label recordHintLabel;
+    juce::Label segmentsLabel;
+    SegmentsListModelSuno segmentsListModel;
+    juce::ListBox segmentsList;
+    juce::Label trimLabel;
+    juce::Slider trimStartSlider;
+    juce::Slider trimEndSlider;
+    juce::TextButton clearSegmentsButton;
     juce::Label promptLabel;
     juce::TextEditor promptEditor;
     juce::Label styleLabel;
@@ -83,6 +108,9 @@ private:
 
     void updateStatusFromProcessor();
     void saveApiKey();
+    void refreshSegmentsList();
+    void updateTrimSlidersFromSelection();
+    void applyTrimToSelectedSegment();
     void refreshLibraryList();
     void insertSelectedIntoDaw();
     void revealSelectedInFinder();
