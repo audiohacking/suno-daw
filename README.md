@@ -11,9 +11,10 @@ Control the **Suno API** from your DAW. Generate music, create covers, and add v
 
 ## Platform Support
 
-**Currently supported:** macOS (Apple Silicon & Intel)
-
-**Future support:** Windows and Linux are planned for future releases.
+**Currently supported:**
+- **macOS** — Apple Silicon (arm64) and Intel (x86_64) via AU and VST3 formats
+- **Windows** — x64 via VST3 format
+- **Linux** — x64 via VST3 format
 
 ## Features
 
@@ -27,14 +28,17 @@ Control the **Suno API** from your DAW. Generate music, create covers, and add v
 ### Pre-built Releases (Recommended)
 
 Download the latest release from [GitHub Releases](https://github.com/audiohacking/suno-daw/releases):
-- `.pkg` installer for easy installation
-- `.zip` for manual installation
+- **macOS:** `.pkg` installer or `.zip` for manual installation
+- **Windows:** `.zip` containing VST3 plugin
+- **Linux:** `.tar.gz` containing VST3 plugin
 
 After installation, rescan plugins in your DAW.
 
 ### Requirements
 
-- macOS (Apple Silicon or Intel)
+- **macOS:** macOS 10.13 or later (Apple Silicon or Intel)
+- **Windows:** Windows 10 or later (x64)
+- **Linux:** Modern Linux distribution with X11 support
 - A Suno API key from [Suno API](https://docs.sunoapi.org/)
 
 ## Quick Start
@@ -54,8 +58,26 @@ After installation, rescan plugins in your DAW.
 
 For developers who want to build the plugin:
 
+### macOS
 ```bash
 cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+### Windows
+```bash
+cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+### Linux
+```bash
+# Install dependencies first
+sudo apt-get install build-essential cmake libcurl4-openssl-dev libasound2-dev \
+  libfreetype6-dev libx11-dev libxcomposite-dev libxcursor-dev libxinerama-dev \
+  libxrandr-dev libgl1-mesa-dev
+
+cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
