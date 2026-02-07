@@ -10,8 +10,6 @@
 #include <algorithm>
 #include <sstream>
 
-#pragma comment(lib, "winhttp.lib")
-
 namespace suno {
 
 static std::string escapeJsonString(const std::string& s) {
@@ -44,8 +42,8 @@ static std::string wstringToString(const std::wstring& wstr) {
 }
 
 static std::string performRequest(const std::wstring& host, int port, const std::wstring& path,
-                                  const std::string& method, const std::string& headers,
-                                  const std::string& body, const std::string& bearerToken) {
+                                  const std::string& method, const std::string& body,
+                                  const std::string& bearerToken) {
     HINTERNET hSession = WinHttpOpen(L"SunoClient/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return {};
@@ -112,7 +110,7 @@ std::string SunoClient::get(const std::string& path) {
     std::string fullPath = (path.empty() || path[0] != '/') ? "/" + path : path;
     std::wstring wpath = stringToWString(fullPath);
     
-    std::string response = performRequest(L"api.sunoapi.org", 443, wpath, "GET", "", "", apiKey_);
+    std::string response = performRequest(L"api.sunoapi.org", 443, wpath, "GET", "", apiKey_);
     if (response.empty()) {
         lastError_ = "Request failed";
         return {};
@@ -141,7 +139,7 @@ std::string SunoClient::post(const std::string& path, const std::string& jsonBod
     std::string fullPath = (path.empty() || path[0] != '/') ? "/" + path : path;
     std::wstring wpath = stringToWString(fullPath);
     
-    std::string response = performRequest(L"api.sunoapi.org", 443, wpath, "POST", "", jsonBody, apiKey_);
+    std::string response = performRequest(L"api.sunoapi.org", 443, wpath, "POST", jsonBody, apiKey_);
     if (response.empty()) {
         lastError_ = "Request failed";
         return {};

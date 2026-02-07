@@ -12,6 +12,10 @@
 
 namespace suno {
 
+// Note: In production code, curl_global_init should be called once at application startup
+// and curl_global_cleanup at shutdown. For this plugin, we initialize per-client for simplicity.
+// If thread-safety issues arise, consider using a global initialization mechanism.
+
 static std::string escapeJsonString(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 8);
