@@ -2,7 +2,7 @@
 
 # suno-daw
 
-> ⚠️ **Proof of Concept** — This is an experimental plugin, not a finished product. Expect bugs and limited functionality.
+> ⚠️ **Proof of Concept** — Expect bugs and limited functionality.
 
 Control the **Suno API** from your DAW. Generate music, create covers, and add vocals to your tracks using Suno's AI-powered music generation.
 
