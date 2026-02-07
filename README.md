@@ -6,6 +6,9 @@
 
 Control the **Suno API** from your DAW. Generate music, create covers, and add vocals to your tracks using Suno's AI-powered music generation.
 
+<img width="600" height="842" alt="Screenshot 2026-02-07 at 13 58 58" src="https://github.com/user-attachments/assets/61f4fb4f-80e3-48a4-a00a-809d67a622a5" />
+
+
 ## Platform Support
 
 **Currently supported:** macOS (Apple Silicon & Intel)
