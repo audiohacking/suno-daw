@@ -1,3 +1,5 @@
+<img width="140" alt="image" src="https://github.com/user-attachments/assets/60679bdb-5642-43af-938e-c5f4182a3852" />
+
 # suno-daw
 
 Experimental AU/VST3 plugin that controls the **Suno API** from your DAW. Insert it on the master (or any bus), set your API key, and generate or transform music using Suno’s Music Generation APIs.
