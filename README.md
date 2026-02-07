@@ -4,6 +4,10 @@
 
 Experimental AU/VST3 plugin that controls the **Suno API** from your DAW. Insert it on the master (or any bus), set your API key, and generate or transform music using Suno’s Music Generation APIs.
 
+### Status
+* Proof-of-Concept
+* Basic SUNO API functional
+
 ## What it does
 
 - **Generate** — Text-to-music: prompt + style + title → new track (plays back and is saved to the plugin library).
